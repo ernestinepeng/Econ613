@@ -1,0 +1,255 @@
+---
+title: "Homework1"
+author: "Peng Peng"
+date: "1/28/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls()) # clean up working environment 
+
+# load data and packages 
+#---------------------------
+pkgs = c("dplyr", "tidyr", "reshape2")
+lapply(pkgs, library, character.only = T)
+
+datjss = read.csv("datjss.csv", na.strings = c("", "NA"), stringsAsFactors = F)
+datsss = read.csv("datsss.csv", na.strings = c("", "NA"), stringsAsFactors = F)
+datstu = read.csv("datstu.csv", na.strings = c("", "NA"), stringsAsFactors = F)
+```
+
+
+
+```{r}
+# Clean up datstu
+#-------------------------------------------------
+d_ind = datstu %>%  # create an indivdiual-level dataset 
+           select(-schoolcode1: -choicepgm6)
+
+d1 = datstu %>% # create a school-program-level dataset 
+        select(X, schoolcode1:choicepgm6) %>% # select schools and programs
+        gather(variable, value, -X) %>% # stack all columns into one 
+        mutate(indicator = substr(variable, 1, nchar(variable)-1),
+               rank_choice = substr(variable, nchar(variable), nchar(variable))) %>% # create indicator (school and choicepgm) column and rank choice column
+        select(-variable) %>% # delete schoolcode column
+        spread(indicator, value) # reshape into wide format 
+   
+d2 = d1 %>%
+     left_join(d_ind, by="X") %>%
+     mutate(schoolcode = as.integer(schoolcode))# combine individual and school-program choice
+
+#-------------------------------------------------
+```
+
+```{r}
+# Clean up datsss
+#-------------------------------------------------
+# Inspect duplicated observations 
+datsss_2 = datsss %>%
+     group_by(schoolcode) %>% 
+     mutate(num_dup = n()) #check how many duplications each schoolcode has 
+
+# Keep non-duplicated 
+datsss_non_dup = datsss %>% 
+        group_by(schoolcode) %>%
+        mutate(num_dup = n()) %>%
+        filter(num_dup == 1) %>% # keep non-duplicated observations
+        filter((!is.na(schoolname)) | (!is.na(ssslat)) | (!is.na(ssslong))) %>% # remove nas 
+  select(schoolcode, schoolname, sssdistrict, ssslong, ssslat)
+
+# Clean duplicated cases 
+library(stringr)
+  datsss_dup = datsss %>% 
+         group_by(schoolcode) %>%
+         mutate(num_dup = n()) %>%
+         filter(num_dup > 1) %>%
+         mutate(schoolname = str_replace_all(schoolname, "^([[:print:]])", "")) %>% # remove special character
+         mutate(nchar_schoolname = nchar(schoolname)) %>% # calculate nchar of school names
+         group_by(schoolcode) %>% 
+         arrange(-nchar_schoolname) %>% #arrange by descending order 
+         filter(row_number() == 1) %>% # keep the entry with longest school name
+         select(schoolcode, schoolname, sssdistrict, ssslong, ssslat)
+
+# Combine into one dataset 
+datsss_clean = datsss_dup %>%
+        bind_rows(datsss_non_dup)
+
+
+#-------------------------------------------------
+```
+
+```{r}
+# Clean up datjss
+#-------------------------------------------------
+datjss_clean = datjss %>% 
+      select(-X)
+#-------------------------------------------------
+```
+
+```{r}
+# Create a dataset that contains all information: individual, school and program (each row is a individual-school-progm level observation)
+
+d3 = d2 %>%
+  left_join(datsss_clean, by = "schoolcode") %>%
+  left_join(datjss_clean, by = "jssdistrict")
+```
+
+```{r}
+# Exercise 1 Missing Data
+#-------------------------------------
+
+# (1) Number of students 
+datstu %>%
+  n_distinct() %>%
+  print()
+
+# (2) Number of schools
+datjss %>% 
+  n_distinct() %>%
+  print()  #number of junior schools
+  
+datsss %>%
+  select(schoolcode) %>%
+  n_distinct() %>%
+  print()  #number of senior schools
+
+# (3) Number of programs 
+datstu %>%
+  select(choicepgm1: choicepgm6) %>%
+  table() %>%
+  nrow %>%
+  print()
+
+# (4) Number of choices
+datstu %>%
+  select(schoolcode1:choicepgm6) %>%
+  unite("c1", schoolcode1, choicepgm1) %>% 
+  unite("c2", schoolcode2, choicepgm2) %>%
+  unite("c3", schoolcode3, choicepgm3) %>%
+  unite("c4", schoolcode4, choicepgm4) %>%
+  unite("c5", schoolcode5, choicepgm5) %>% 
+  unite("c6", schoolcode6, choicepgm6) %>%
+  gather(x, choice) %>%
+  select(-x) %>%
+  n_distinct() %>%
+  print()
+
+# (5) Missing test score
+datstu %>%
+  filter(is.na(score)) %>%
+  nrow() %>%
+  print()
+
+# (6) Apply to the same school different programs
+  d3 %>%
+  select(X, schoolcode, choicepgm) %>%
+  group_by(X) %>%
+  mutate(n_school = n_distinct(schoolcode)) %>%
+  mutate(n_prog = n_distinct(choicepgm))
+  filter(n_school < 6 & n_prog < 6 ) %>%
+  nrow() %>%
+  print()
+
+# (7) Apply to less than 6 choices 
+datstu %>% 
+  group_by(X) %>%
+  mutate(n_school = n_distinct(schoolcode)) %>%
+  filter(n_school < 6) %>%
+  arrange(X) %>%
+  filter(row_number() == 1) %>%
+  nrow() %>%
+  print()
+
+```
+
+```{r}
+# Exercise 2 Data
+# -------------------------------------------
+# Create a prog-school level dataset 
+
+d4 = d3 %>% 
+  mutate(admit = ifelse(rank_choice == rankplace, 1, 0)) %>% # create an indicator whether admitted 
+  filter(admit == 1) %>% # keep admitted observations 
+  unite("school_choicepgm", schoolcode, choicepgm) %>% # create school_prgm variable
+  select(school_choicepgm, score, sssdistrict, ssslong, ssslat, point_x, point_y, rankplace) %>%
+  na.omit() %>% 
+  group_by(school_choicepgm) %>%
+  mutate(size = n()) %>% # number of admitted students
+  mutate(quality = mean(score)) %>% # average score 
+   # keep lowest score
+  mutate(cutoff = min(score)) 
+
+#--------------------------------------------
+```
+
+```{r}
+# Exercise 3 Distance 
+# ----------------------------------------------
+d5 = d4 %>% ungroup() %>%
+  rename(jsslong = point_y) %>% #rename jss latitude and longitude 
+  rename(jsslat = point_x) %>% 
+  mutate(dist = (69.172*(ssslong - jsslong)*cos((jsslat/57.3)^2) + 
+                69.172*((ssslat - jsslat)^2)
+                )^2)  # calculate distance
+
+#------------------------------------------------
+```
+
+```{r}
+# Exercise 4 Descriptive Characteristics 
+#-------------------------------------------------
+# (1) Group by rank place 
+
+d6 = d5 %>% 
+        group_by(rankplace) %>% 
+        summarise(cutoff_mean = mean(cutoff), cutoff_sd = sd(cutoff),
+                quality_mean = mean(quality), quality_sd = sd(quality),
+                dist_mean = mean(dist), dist_sd = sd(dist)
+                )
+print(d6)
+
+
+# (2) Group by quantile 
+
+d7 = d5 %>%
+        mutate(quantile = ntile(score, 4)) %>%
+        group_by(quantile) %>%
+        summarise(cutoff_mean = mean(cutoff), cutoff_sd = sd(cutoff),
+                quality_mean = mean(quality), quality_sd = sd(quality),
+                dist_mean = mean(dist), dist_sd = sd(dist)
+                )
+print(d7)
+
+#-------------------------------------------------
+```
+
+```{r}
+# Exercise 5 
+#-------------------------------------------------
+# (1) Group by schools 
+d8 = d3 %>% select(X, schoolcode, score, rankplace, rank_choice) %>%
+  mutate(admit = ifelse(rank_choice == rankplace, 1, 0)) %>% # create an indicator whether admitted 
+  filter(admit == 1) %>% 
+  group_by(schoolcode) %>% 
+  arrange(score) %>%
+  filter(row_number() == 1) %>%
+  mutate(cutoff = score) %>%
+  select(-X) %>% 
+  ungroup() %>%
+  mutate(decile = ntile(cutoff, 10)) %>% # separate cutoffs into 10 groups 
+  select(schoolcode, cutoff, decile) %>%
+  left_join(d3, by = "schoolcode") %>%
+  select(schoolcode, cutoff, decile, X, score) %>%
+  group_by(X) %>%
+  mutate(n_decile = n_distinct(decile)) %>% #count unique groups 
+
+# (2) Group by test score 
+  d9 = d3 %>% select(X, score, schoolcode) %>% mutate(quantile = ntile(score, 4)) %>% select(X, quantile) %>% left_join(d3, by="X") %>%
+  select(X, quantile, score) %>%
+  group_by(X) %>%
+  mutate(n_quantile = n_distinct(quantile))
+  
+      
+#-------------------------------------------------
+```
