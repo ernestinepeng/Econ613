@@ -1,0 +1,393 @@
+---
+title: "Econ613: Homework 2"
+author: "Peng Peng"
+date: "2/1/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE, message = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+
+library(dplyr)
+library(magrittr)
+library(mfx)
+library(foreign)
+library(numDeriv)
+
+```
+
+# Exercise 1 Data Creation
+```{r, message = FALSE}
+set.seed(1234)
+
+# Create Xs and eps---------------------------------------------
+
+X1 = runif(10000, min = 1, max = 3)  
+X2 = rgamma(10000, shape = 3, scale = 2) 
+X3 = rbinom(10000, size = 1, prob = 0.3) 
+eps = rnorm(10000, mean = 2, sd = 1) 
+intercept = c(rep(1, 10000))
+d1 = data.frame(cbind(intercept, X1, X2, X3, eps))
+
+
+# Create Y and ydum-------------------------------------------
+
+d1 %<>%
+  mutate(Y = intercept + 1.2*X1 - 0.9*X2 + 0.1*X3 + eps) %<>%
+  mutate(ydum = ifelse(Y > mean(Y), 1, 0))
+
+```
+
+# Exercise 2 OLS
+```{r, message = FALSE, warning=FALSE}
+
+# Calculate corr(Y, X1)--------------------------------------
+
+x1 = d1$X1 
+y = d1$Y 
+n = nrow(d1)
+
+# Calculate sample standard deviation of X1 and Y
+sd_x = sqrt((sum((x1 - mean(x1))^2))/(n - 1))
+sd_y = sqrt((sum((y - mean(y))^2))/(n - 1))
+
+# Calculate correlation
+corr = cov(x1, y)/(sd_x*sd_y)
+
+# How different is it from 1.2
+diff = 1.2 - corr
+
+# Calculate the coefficients on the regression-------------------
+
+X = cbind(intercept, X1, X2, X3, eps)
+Y = as.matrix(d1$Y)
+A = solve(t(X) %*% X) %>% as.matrix()
+b_hat = A %*% t(X) %*% Y
+b_hat
+
+# Calculate the standard errors-----------------------------------
+n = nrow(d1)
+k = ncol(X) - 1
+u_hat = Y - X %*% b_hat
+sigsq_hat = as.numeric(t(u_hat) %*% u_hat / (n - k - 1))
+b_cov = sigsq_hat * A
+se_ols = sqrt(diag(b_cov))
+se_ols
+
+# Bootstrap standard errors------------------------------------
+
+# write a function to return standard error 
+boot_se = function(data){
+  X = cbind(data$intercept, data$X1, data$X2, data$X3, data$eps)
+  Y = as.matrix(data$Y)
+  A = as.matrix(solve(t(X) %*% X))
+  b_hat = A %*% t(X) %*% Y
+  n = nrow(data)
+  k = ncol(data) - 1
+  u_hat = Y - X %*% b_hat
+  sigsq_hat = as.numeric(t(u_hat) %*% u_hat / (n - k - 1))
+  b_cov = sigsq_hat * A
+  b_se = sqrt(diag(b_cov))
+  return(b_se)
+}
+
+# write a for loop to resample 49 times
+output = list()
+
+for (x in 1:49) {
+  df = sample_n(d1, nrow(d1), replace = T)
+  output[[x]] = boot_se(df)
+}
+
+bt_se_ols = data.frame(t(sapply(output, c)))
+
+# rename the columns and match to d1
+names(bt_se_ols) = names(d1[, 1:5])
+
+#c alculate the average standard error 
+bt_se_ols = bt_se_ols %>% summarise_all(mean)
+bt_se_ols
+
+# write a for loop to resample 499 times
+output = list()
+
+for (x in 1:499) {
+  df = sample_n(d1, nrow(d1), replace = T)
+  output[[x]] = boot_se(df)
+}
+
+bt_se_ols2 = data.frame(t(sapply(output, c)))
+
+#rename the columns and match to d1
+names(bt_se_ols2) = names(d1[, 1:5])
+
+#calculate the average standard error 
+bt_se_ols2 = bt_se_ols2 %>% summarise_all(mean)
+bt_se_ols2
+
+```
+# Exercise 3 Numerical Optimization 
+```{r, message = FALSE, warning=FALSE}
+x = d1[, 1:4] %>% as.matrix()
+y = d1$ydum 
+
+
+L_probit = function(beta, X = x, Y = y){
+  # get linear predictor
+  z = X %*% beta
+  # probability
+  p = pnorm(z)
+  p[p==1] = 0.9999
+  p[p==0] = 0.0001
+  # log-likelihood function
+  L = Y * log(p) + (1 - Y) * log( 1 - p)
+  # sum over sample n and take negative log-likelihood
+  -sum(L)
+}
+
+# Steepest ascent optimization algorithm--------------------------------------
+# gradient 
+alpha = 1e-6
+h = 0.0001
+output = list()
+beta = c(0, 0, 0, 0)
+c = 1
+
+gradient =  function(fun,par){
+    g = NULL
+    for(i in 1:length(par)){
+   par.n = par
+   par.n[i] = par.n[i] + h
+   df = (fun(par.n) - fun(par))/h
+   g = c(g, df)
+    }
+    return(g)
+}
+
+
+# compute beta
+while (c > 0.0001){
+  g = gradient(L_probit,beta)
+  beta. = as.numeric(beta - alpha %*% g)
+  c = abs((L_probit(beta.)-L_probit(beta)))/abs(L_probit(beta))
+  beta = as.numeric(beta.)
+}
+
+beta
+```
+
+# Exercise 4 Discrete Choice 
+
+```{r, message = FALSE, warning=FALSE}
+
+# Probit model----------------------------------------------------------------
+
+# optimize the negative loglikelihood
+
+L_probit = function(beta, X = x, Y = y){
+  # get linear predictor
+  z = X %*% beta
+  # probability
+  p = pnorm(z)
+  p[p==1] = 0.9999
+  p[p==0] = 0.0001
+  # log-likelihood function
+  L = Y * log(p) + (1 - Y) * log( 1 - p)
+  # sum over sample n and take negative log-likelihood
+  -sum(L)
+}
+
+fit1 = optim(par = c(0, 0, 0, 0), L_probit)
+par1 = fit1$par
+
+# Logit model-------------------------------------------------------------
+L_logit = function(beta, X = x, Y = y){
+  z = X %*% beta
+  p = exp(z)/(1 + exp(z))
+  p[p==1] = 0.9999
+  p[p==0] = 0.0001
+  # log-likelihood function
+  L = Y * log(p) + (1 - Y) * log( 1 - p)
+  # sum over sample n and take negative log-likelihood
+  -sum(L)
+}
+
+fit2 = optim(par = c(0, 0, 0, 0), L_logit)
+par2 = fit2$par
+
+
+# Linear model---------------------------------------------------------
+
+L_linear = function(beta, X = x, Y = y){
+  z = X %*% beta
+  z[z==1] = 0.9999
+  z[z==0] = 0.0001
+  L = Y * log(z) + (1 - Y) * log(1 - z)
+  -sum(L)
+}
+
+fit3 = optim(par = c(0, 0, 0, 0), L_linear)
+par3 = fit3$par
+
+# Check with pkg output------------------------------------------------
+
+f_probit = glm(ydum ~ X1 + X2 + X3, 
+               family = binomial(link = probit),
+               data = d1)
+f_logit = glm(ydum ~ X1 + X2 + X3, 
+              family = binomial(link = logit), 
+              data = d1)
+f_linear = glm(ydum ~ X1 + X2 + X3,
+               family = "gaussian",
+               data = d1)
+
+model.list = list(f_probit, f_logit, f_linear) 
+coef_pkg = sapply(model.list, coef) %>% as.data.frame()
+names(coef_pkg)= c("probit", "logit", "linear")
+coef_pkg
+
+coef_hand = cbind(par1, par2, par3) %>% as.data.frame()
+names(coef_hand) = c("probit", "logit", "linear")
+row.names(coef_hand) = c("(Intercept)", "X1", "X2", "X3")             
+coef_hand
+
+# Interpret the coefficients----------------------------------------------
+# For probit and logit models, we expect X1, X2, and X3 to have 
+# positive relationships with ydum. We can not say much about the
+# magnitude, however. For linear models, the coefficients are the 
+# expected changes in the probability for a one-unit change in 
+# X1, X2, X3 respectively, holding everything elese constant. 
+```
+
+
+# Exercise 5 Marginal Effects
+
+```{r, message = FALSE, warning=FALSE}
+# Compute the marginal effects of X on Y--------------------------
+
+# probit model
+x = d1[, 1:4] %>% as.matrix()
+
+# marginal effect for each observation
+d_probit = (dnorm(x %*% par1)) %*% par1
+
+# average out marginal effect 
+marginal_probit = apply(d_probit, 2, mean)
+marginal_probit
+
+# logit model
+d_logit = (exp(x %*% par2) / ((1 + exp(x %*% par2))^2)) %*% par2
+marginal_logit = apply(d_logit, 2, mean)
+marginal_logit
+
+# check with package 
+
+probitmfx(formula = f_logit, data = d1, atmean = FALSE)
+
+# Compute the standard deviations using the Delta method---------------
+
+# probit model
+
+# marginal effect 
+marginal_probit = function(x = x, beta = par1){
+  marginal_probit = (dnorm(x %*% beta)) %*% beta
+  return(marginal_probit)
+  }
+
+# jacobian matrix
+j_probit = jacobian(marginal_probit, par1)
+
+# var(ME)
+var_probit = vcov(f_probit)
+
+# standard error 
+se_probit_delta = diag((j_probit) %*% var_probit %*% t(j_probit)) 
+se_probit_delta
+
+# logit model
+
+#marginal effect
+marginal_logit = function(x = x, beta = par2){
+  marginal_logit = (dlogis(x %*% beta)) %*% beta
+  return(marginal_logit)
+  }
+
+# jacobian matrix
+j_logit = jacobian(marginal_logit, par2)
+
+# var(ME)
+var_logit = vcov(f_logit)
+
+#standard error 
+se_logit_delta = diag(j_logit %*% var_logit %*% t(j_logit)) 
+se_logit_delta
+
+
+# Bootstrap the standard errors-----------------------------------------
+
+# probit model
+
+L_probit = function(beta, X, Y){
+  z = X %*% beta
+  p = pnorm(z)
+  p[p==1] = 0.9999
+  p[p==0] = 0.0001
+  L = Y * log(p) + (1 - Y) * log( 1 - p)
+  -sum(L)
+}
+
+coef_est_probit = function(data){
+  X_s = as.matrix(data[, 1:4])
+  Y_s = data[, 7]
+  fit1 = optim(par = c(0, 0, 0, 0), fn = L_probit, X = X_s, Y = Y_s)
+  par1 = fit1$par
+}
+
+output = list()
+n_sample = 49
+
+for (i in 1:n_sample){
+  df = sample_n(d1, nrow(d1), replace = T)
+  output[[i]] = coef_est_probit(data = df)
+  message(i, " of ", n_sample)
+}
+
+output_df_probit = do.call(rbind, output)
+output_df_probit
+
+plot(density(output_df_probit[, 1]))
+
+# logit model
+
+L_logit = function(beta, X, Y){
+  z = X %*% beta
+  p = exp(z)/(1 + exp(z))
+  p[p==1] = 0.9999
+  p[p==0] = 0.0001
+  L = Y * log(p) + (1 - Y) * log( 1 - p)
+  -sum(L)
+}
+
+coef_est_logit = function(data){
+  X_s = as.matrix(data[, 1:4])
+  Y_s = data[, 7]
+  fit2 = optim(par = c(0, 0, 0, 0), fn = L_logit, X = X_s, Y = Y_s)
+  par2 = fit2$par
+}
+
+output = list()
+n_sample = 49
+for (i in 1:n_sample){
+  df = sample_n(d1, nrow(d1), replace = T)
+  output[[i]] = coef_est_logit(data = df)
+  message(i, " of ", n_sample)
+}
+
+output_df_logit = do.call(rbind, output)
+output_df_logit
+
+plot(density(output_df_logit[, 1]))
+
+
+```
