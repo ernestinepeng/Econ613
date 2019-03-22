@@ -1,0 +1,307 @@
+---
+title: 'Homework 3: Multinomial Logit Models'
+author: "Peng Peng"
+date: "3/6/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+
+pkgs = c("dplyr", "purrr", "tidyr", "bayesm", "ggplot2", "data.table", "dummies")
+lapply(pkgs, library, character.only = T)
+
+data("margarine")
+
+data = left_join(margarine$choicePrice, margarine$demos, by = "hhid")
+
+```
+
+# Exercise 1: Data Description
+```{r}
+# Average and dispersion of the product characteristics 
+#--------------------------------------------------------------------
+
+# A list of functions to apply across all columns 
+x = data[, 3:12]
+f = function(x){
+  list(mean(x), sd(x))
+}
+
+# Transpose the result matrix and add product characteristics 
+pr_char = data.frame(t(sapply(x, f))) %>%
+    rename(mean = X1, sd = X2) %>% 
+    cbind(names(data[, 3:12])) %>%
+    print()
+
+# Market share of each product-----------------------------------------------------
+
+# Match names to choices 
+product = names(data[, 3:12])
+
+setnames(data, old = product, new = as.character(c(1:10)))
+
+# Calculate market share of brands for Stk
+share_stk = data %>% 
+  select(2:8) %>%
+  filter(choice < 7) %>% 
+  group_by(choice) %>%
+  summarise (n = n()) %>%
+  mutate(share = n / sum(n)) %>% 
+  mutate(product = product[3:8]) %>% 
+  select(product, share) %>%
+  print()
+
+# Calculate market share of brands for Tub 
+share_tub = data %>% 
+  select(2, 9:12) %>%
+  filter(choice > 6) %>% 
+  group_by(choice) %>%
+  summarise (n = n()) %>%
+  mutate(share = n / sum(n)) %>% 
+  mutate(product = c("PSS_Tub", "PPk_Tub", "PFl_Tub", "PHse_Tub")) %>%
+  select(product, share) %>%
+  print()
+
+# Map observed attributes to choice----------------------------------------------
+
+t1 = table(data$choice, data$Income) 
+t1 = cbind(as.matrix(product), t1)
+
+t2 = table(data$choice, data$Fam_Size)
+t2 = cbind(as.matrix(product), t2)
+
+t3 = table(data$choice, data$Fs3_4)
+t3 = cbind(as.matrix(product), t3)
+
+t4 = table(data$choice, data$Fs5.)
+t4 = cbind(as.matrix(product), t4)
+
+t5 = table(data$choice, data$college)
+t5 = cbind(as.matrix(product), t5)
+
+t6 = table(data$choice, data$whtcollar)
+t6 = cbind(as.matrix(product), t6)
+```
+
+
+# Exercise 2: First Model
+A conditional logit model could be used to model the effect of price on demand. The probability of household $i$ choosing product $j$ can be written as:
+$$Pr_{ij} = \frac{exp(X_{ij}\beta)}{\sum_{j=1}^{m}exp(X_{ij}\beta)}, $$ where $x_ij$ is the price of the product facing each household. 
+
+For identification purpose, we normalize $\alpha_1$ to 0. We divide the probability by $\frac{exp(X_{i1}\beta + \alpha_1)}{exp(X_{i1}\beta + \alpha_1)}$
+we get:
+$$Pr_{ij} = \frac{exp((X_{ij} - X_{i1})\beta + (\alpha_j - \alpha_1))}{\sum_{1}^{m}exp((X_{ik} - X_{i1})\beta + (\alpha_k - \alpha_1))}.$$
+
+$$L = \prod_{i = 1}^{n} \prod_{j = 1}^{m}Pr_{ij}\mathbb{1}[j = j*]$$ where $j*$ is the actual choice made by $i$.
+ Log-likelihood is thus: 
+ $$\prod_{i = 1}^{n} \prod_{j = 1}^{m}log(Pr_{ij}\mathbb{1}[j = j*]) \\
+ = \prod_{i = 1}^{n} \prod_{j = 1}^{m}log(\frac{exp((X_{ij} - X_{i1})\beta + (\alpha_j - \alpha_1))}{\sum_{1}^{m}exp((X_{ik} - X_{i1})\beta + (\alpha_k - \alpha_1))}$$
+
+```{r}
+
+#Likelihood function---------------------------------------
+data = data
+cl_ll = function(beta){
+  x = data[, 3:12] - data[, 3]# set price 1 as reference and substract price 1 from all prices
+  b = beta[1] # constant beta 
+  alpha = beta[2:11] # alternative-specific constant 
+  alpha[1] = 0  # set alpha_1 to zero 
+  x_beta = x * b 
+  alpha_choice = matrix(nrow = nrow(data), ncol = 1)
+  x_beta_j = matrix(nrow = nrow(data), ncol = 1)
+  alpha_t = matrix(rep(t(alpha), times = nrow(data)), ncol = ncol(t(alpha)), byrow = T)
+  
+  for (i in 1: nrow(data)){
+    jstar  = data[i, "choice"]
+    alpha_j = alpha[jstar]
+    alpha_choice[i] = alpha_j
+    x_beta_j[i] = x_beta[i, jstar]
+  }
+  numerator = exp(x_beta_j + alpha_choice)
+  xbetak =  exp(x_beta + alpha_t)
+  denominator = rowSums(xbetak)
+  pr = numerator / denominator
+  ll = log(pr)
+  cl_ll = -sum(ll)
+}
+
+# Maxmize log-likelihood function
+fit_cl = nlm( f=cl_ll, p = c(rep(0, times = 11)))
+par_cl = fit_cl$estimate
+print(par_cl)
+
+# Interpret the coefficient on price-------------------------------
+# For one unit increase in price, we would expect the household's utility to decrease. Compare to the reference product, product 2, 4, 6 give households lower utility and other products give households higher utility.
+```
+
+# Multinomial Logit Model 
+Household $i$'s probability of choosing product $j$ is modelled as:
+$$Pr_{ij} = \frac{X_{i}\beta_j}{\sum_{l=1}^{m} exp(X_i\beta_l)},$$ where $X_i$ is a batter of household characteristics including income, family size, college, white collar, retired. 
+
+The likelihood function is $$L = \prod_{i = 1}^{n} \prod_{j = 1}^{m}Pr_{ij}\mathbb{1}[j = j*]$$ where $j*$ is the actual choice made by $i$.
+ Log-likelihood is thus: 
+ $$\prod_{i = 1}^{n} \prod_{j = 1}^{m}log(Pr_{ij}\mathbb{1}[j = j*]) \\
+ = \prod_{i = 1}^{n} \prod_{l = 1}^{m}log(\frac{X_{i}\beta_j}{\sum_{l=1}^{m} exp(X_i\beta_l)})$$
+```{r}
+
+#Likelihood function ------------------------------
+
+library(dummies)
+indicator = dummy("choice", data = data)
+
+x_i = as.matrix(data[, 13:19])
+
+ll_mn = function(beta){
+  beta = matrix(beta, nrow = 7, byrow = T)
+  beta[, 1] = 0
+  x_i_beta_j = x_i %*% beta
+  ex = exp(x_i_beta_j)
+  pr = t((apply(ex, 1, function(x) x / sum(x))))
+  pr_choice = pr * indicator 
+  pr_choice = rowSums(pr_choice)
+  ll_mn =  -sum(log(pr_choice))
+  return(ll_mn)
+}
+
+fit_mn = nlm(f = ll_mn, p = c(rep(0, times = 70)))
+par_mn = data.frame(matrix(fit_mn$estimate, nrow = 7, byrow = T)) 
+names(par_mn) = names(data[, 3:12])
+rownames(par_mn) = names(data[, 13:19])
+print(par_mn)
+
+# Check with package 
+library(nnet)
+
+function_mn = multinom(choice ~ Income+ Fs3_4+Fs5. + Fam_Size + college+whtcollar + retired, data = data )
+summary(function_mn)
+
+# Interpret coefficien on income -------------------------------------
+# Compared to reference product, higher income yields households product 2 yields households lower utility. Similarly, product 3 yields households higher utility, compared to reference product 1. 
+
+
+```
+
+# Marginal Effects
+```{r}
+# Conditional logit------------------
+
+# Calculate probability for each i and j
+x = data[, 3:12] - data[, 3]
+b = par_cl[1]
+alpha = par_cl[2:11] 
+x_beta = x * b 
+alpha_choice = matrix(nrow = nrow(data), ncol = 1)
+x_beta_j = matrix(nrow = nrow(data), ncol = 1)
+alpha_t = matrix(rep(t(alpha), times = nrow(data)), ncol = ncol(t(alpha)), byrow = T)
+xbetak =  exp(x_beta + alpha_t)
+denominator = rowSums(xbetak)
+pr_ij = as.matrix(xbetak/denominator) 
+pr = t(pr_ij) %*% pr_ij * (-b)
+a = matrix(rep(colSums(pr_ij) * b,10), ncol=10 )
+a = a * diag(10)
+
+me_cl = data.frame((pr + a)/nrow(data))
+print(me_cl)
+
+# Multinomial logit-------------------------------------------
+x_i = as.matrix(data[, c("Income", "Fs3_4", "Fs5.",  "college", "whtcollar", "retired")])
+x_i = as.matrix(cbind(x_i, rep(1, times = nrow(data))))
+beta = matrix(fit_mn$estimate, nrow = 7, byrow = T)
+x_i_beta_j = x_i %*% beta
+ex = exp(x_i_beta_j)
+pr = t((apply(ex, 1, function(x) x / sum(x))))
+beta_income = matrix(beta[1, ])
+
+beta_bar = pr %*% beta_income 
+beta_bar_large = matrix(rep(beta_bar, 10), ncol = 10 )
+beta_j = matrix(rep(t(beta_income)), nrow(data), byrow = T, ncol = 10)
+me_mn = data.frame(colSums(pr * (beta_j - beta_bar_large))/nrow(data))  
+names(me_mn) = "ME_Income"
+row.names(me_mn) = names(data[, 3:12])
+print(me_mn)
+
+
+# Interpret marginal effects 
+# For conditional logit, if the price of product 1 increases, we would expect households to be less likely to purchase product 1, more likely to purchase other products. 
+# For multinomial logit, if the income of household increases, we would expect households to be less likely to purchase product 1, 4, 5, 7, 10, and more likely to purchase the other products. 
+```
+
+
+# Mixed Logit and IIA 
+```{r}
+# Mixed logit model-------------------------------------------------------
+x_ij = data[, 3:12]
+w_i = as.matrix(data[, c("Income", "Fs3_4", "Fs5.",  "college", "whtcollar", "retired")])
+w_i = as.matrix(cbind(rep(1, times = nrow(data)), w_i))
+indicator = indicator 
+
+
+# Likelihood function
+ml_ll = function(b){
+  beta = b[1]
+  gamma = matrix(b[2:71], nrow = 7, ncol =10,  byrow = T)
+  gamma[, 1] = 0
+  x_i_j_beta = x_ij * beta
+  w_i_r_j = w_i %*% gamma
+  num = rowSums(exp((x_i_j_beta + w_i_r_j) * indicator))
+  denom = rowSums(exp((x_i_j_beta + w_i_r_j)))
+  pr = num / denom 
+  ml_ll = -sum(log(pr))
+  return(ml_ll)
+}
+
+# Maximize likelihood 
+fit_ml = nlm(f = ml_ll, p = rep(0, times = 71))
+par_ml = fit_ml$estimate
+par_ml = data.frame(matrix(fit_ml$estimate[2:71], nrow = 7, byrow = T)) 
+par_ml = rbind(par_ml, rep(fit_ml$estimate[1], times = 10, byrow = T))
+names(par_ml) = names(data[, 3:12])
+rownames(par_ml) = c(names(data[, 13:19]), "price")
+
+
+#Test IIA------------------------------------------------
+
+# Restrict data to choices not equal to 1 
+d_res = data %>%
+        filter(choice!=1)
+x_ij_res = d_res[, 4:12]
+w_i_res = as.matrix(d_res[, c("Income", "Fs3_4", "Fs5.",  "college", "whtcollar", "retired")])
+w_i_res = as.matrix(cbind(w_i_res, rep(1, times = nrow(d_res))))
+indicator = dummy("choice", data = d_res)
+
+# LikelihooD function for the restricted model
+ml_ll_res = function(b){
+  beta = b[1]
+  gamma = matrix(b[2:64], nrow = 7, ncol = 9,  byrow = T)
+  gamma[, 1] = 0
+  x_i_j_beta = x_ij_res * beta
+  w_i_r_j = w_i_res %*% gamma
+  num = rowSums(exp(x_i_j_beta + w_i_r_j) * indicator)
+  denom = rowSums(exp((x_i_j_beta + w_i_r_j)))
+  pr = num / denom 
+  ml_ll_res = -sum(log(pr))
+  return(ml_ll_res)
+}
+
+
+fit_ml_res = nlm(f = ml_ll_res, p = rep(0, times = 64))
+par_ml_res = fit_ml_res$estimate
+par_ml_res = data.frame(matrix(fit_ml_res$estimate[2:71], nrow = 7, byrow = T)) 
+par_ml_res = rbind(par_ml_res, rep(fit_ml_res$estimate[1], times = 10, byrow = T))
+names(par_ml_res) = names(data[, 4:12])
+rownames(par_ml_res) = c(names(d_res[, 13:19]), "price")
+
+# Compute test statistics 
+beta_f = fit_ml$estimate
+beta_r = fit_ml_res$estimate
+L_f = ml_ll(beta_f)
+L_r = ml_ll_res(beta_r)
+MTT = -2 * (L_f - L_r) 
+library(chi)
+pchi(MTT, 57, lower.tail = F)
+
+# Therefore, IIA property is violated. 
+```
+
